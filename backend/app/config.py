@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     max_session_seconds: int = Field(gt=0)
     late_sample_grace_seconds: int = Field(ge=0)
     max_request_bytes: int = Field(gt=0)
+    rate_limit_window_seconds: int = Field(gt=0)
+    rate_limit_create_per_window: int = Field(gt=0)
+    rate_limit_requests_per_window: int = Field(gt=0)
+    trusted_proxy_hops: int = Field(ge=0)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
     @field_validator("database_url")

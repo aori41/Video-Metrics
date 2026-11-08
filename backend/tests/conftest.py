@@ -32,6 +32,10 @@ def base_settings() -> Settings:
         max_session_seconds=3600,
         late_sample_grace_seconds=60,
         max_request_bytes=65536,
+        rate_limit_window_seconds=60,
+        rate_limit_create_per_window=1000,
+        rate_limit_requests_per_window=1000,
+        trusted_proxy_hops=0,
         log_level="INFO",
     )
 

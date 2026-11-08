@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Double,
@@ -53,3 +54,12 @@ class Sample(Base):
     face: Mapped[bool] = mapped_column(Boolean, nullable=False)
     verdict: Mapped[str] = mapped_column(String(8), nullable=False)
     reason: Mapped[str | None] = mapped_column(String(16))
+
+
+class RateLimitCounter(Base):
+    __tablename__ = "rate_limit_counters"
+
+    bucket: Mapped[str] = mapped_column(String(16), primary_key=True)
+    client_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    window_start: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    hits: Mapped[int] = mapped_column(Integer, nullable=False)

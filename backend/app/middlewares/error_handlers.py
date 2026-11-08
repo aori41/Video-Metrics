@@ -5,7 +5,7 @@ from flask import Flask, Response, jsonify
 from pydantic import ValidationError
 from werkzeug.exceptions import HTTPException
 
-from app.errors import ApiError
+from app.errors import ApiError, RateLimitedError
 from app.utils.logger import log_fields
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,13 @@ def _handle_api_error(error: ApiError) -> tuple[Response, int]:
     return _rejected_response(error.status_code, error.code, error.message, error.details)
 
 
+def _handle_rate_limited(error: RateLimitedError) -> tuple[Response, int]:
+    response, status = _handle_api_error(error)
+    response.headers["Retry-After"] = str(error.retry_after)
+
+    return response, status
+
+
 def _handle_validation_error(error: ValidationError) -> tuple[Response, int]:
     details = _format_validation_error(error)
     first = details[0]
@@ -62,6 +69,7 @@ def _handle_unexpected_error(error: Exception) -> tuple[Response, int]:
 
 def register_error_handlers(app: Flask) -> None:
     app.register_error_handler(ApiError, _handle_api_error)
+    app.register_error_handler(RateLimitedError, _handle_rate_limited)
     app.register_error_handler(ValidationError, _handle_validation_error)
     app.register_error_handler(HTTPException, _handle_http_exception)
     app.register_error_handler(Exception, _handle_unexpected_error)

@@ -3,6 +3,7 @@ from uuid import UUID
 from flask import Blueprint, Response, current_app, jsonify
 
 from app.db.session import get_db
+from app.middlewares.request_guards import enforce_rate_limit, reject_foreign_origin
 from app.routes.request_parsing import (
     parse_idempotency_key,
     parse_json_body,
@@ -13,6 +14,8 @@ from app.schemas.session import StopSessionIn
 from app.services.session_service import SessionService
 
 sessions_blueprint = Blueprint("sessions", __name__, url_prefix="/sessions")
+sessions_blueprint.before_request(reject_foreign_origin)
+sessions_blueprint.before_request(enforce_rate_limit)
 
 
 def _service() -> SessionService:
