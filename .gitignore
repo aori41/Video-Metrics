@@ -1,0 +1,32 @@
+# Secrets and local configuration
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Private project notes
+docs/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Generated from node_modules by frontend/scripts/setup-mediapipe.mjs
+frontend/public/mediapipe/wasm/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tooling
+.vercel/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
