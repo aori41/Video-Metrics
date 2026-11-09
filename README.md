@@ -2,6 +2,17 @@
 
 Analyzes the webcam in the browser and shows live FPS, brightness, motion, face presence and a Good or Poor verdict. Video never leaves the browser. Only the numbers reach the backend.
 
+| Part | Choice |
+|---|---|
+| Frontend | React, TypeScript, Vite, Mantine, uPlot, axios, MediaPipe Face Detection |
+| Backend | Python, Flask, Pydantic, SQLAlchemy |
+| Database | Postgres |
+| Free services | Vercel (frontend and backend), Neon (Postgres), GitHub |
+
+Free backends sleep when idle, so the first request can take up to a minute.
+
+**Contents:** [Run locally](#run-locally) · [Tests](#tests) · [Project map](#project-map) · [Architecture](#architecture) · [API](#api) · [Thresholds](#thresholds) · [Data and edge cases](#data-and-edge-cases) · [Environment variables](#environment-variables)
+
 ---
 
 ## Run locally
@@ -33,7 +44,9 @@ npm run dev
 - Client: http://localhost:5173
 - Server: http://localhost:5000
 
-### Tests
+---
+
+## Tests
 
 ```bash
 cd backend
@@ -47,6 +60,148 @@ npm test
 On Windows, use `.venv\Scripts\python` for the backend commands.
 
 The backend tests run on Postgres and create the database named in `TEST_DATABASE_URL` if it doesn't exist.
+
+---
+
+## Project map
+
+```
+backend/
+  wsgi.py                 Entry point
+  app/
+    __init__.py           create_app: wires everything together
+    config.py             Settings read from .env
+    errors.py             API errors and their status codes
+    routes/               HTTP endpoints
+    schemas/              Pydantic request and response validation
+    services/             Business rules, summaries, rate limiter
+    repositories/         All database queries
+    db/                   Models, engine, table creation
+    middlewares/          Error handlers, request logging, Origin and rate limit guards
+    utils/                Logger
+  tests/
+
+frontend/
+  src/
+    main.tsx, App.tsx     App startup
+    router.tsx            Screens and their URLs
+    theme.ts              Colors and Mantine theme
+    components/           live/, charts/, history/, layout/
+    hooks/                Connect React to the session and the API
+    session/              Recording lifecycle and the sample outbox
+    media/                Camera, frame loop, face detection, worker connection
+    workers/              Web Worker that analyzes frames
+    domain/               Metric, per-second and verdict calculations
+    controllers/          API calls
+    config/               Environment values and chart settings
+    types/                Shared types
+    utils/                Chart and formatting helpers
+  tests/                  Same folders as src/
+
+scripts/                  npm run setup and npm run dev
+```
+
+### Where to look
+
+| To find | Open |
+|---|---|
+| FPS, brightness and motion calculations | `frontend/src/domain/frameAnalysis.ts`, `frontend/src/domain/SecondAggregator.ts` |
+| The Good or Poor decision | `frontend/src/domain/verdict.ts` |
+| Start, pause and Stop | `frontend/src/session/SessionController.ts` |
+| Sending, retrying and keeping samples | `frontend/src/session/SampleOutbox.ts` |
+| Live screen | `frontend/src/components/live/LiveScreen.tsx` |
+| API endpoints | `backend/app/routes/sessions.py` |
+| Validation limits | `backend/app/schemas/sample.py`, `backend/app/schemas/session.py` |
+| Session rules | `backend/app/services/session_service.py` |
+| Summary numbers | `backend/app/services/summary.py`, `backend/app/repositories/session_repository.py` |
+| Database tables | `backend/app/db/models.py` |
+| Rate limits and Origin check | `backend/app/middlewares/request_guards.py`, `backend/app/services/rate_limiter.py` |
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph browser["Browser: video stays here"]
+        direction LR
+        camera["Camera"]
+        face["Face detection<br/>MediaPipe, main thread"]
+        worker["Web Worker<br/>metrics, verdict,<br/>per-second sample"]
+        chart["Live chart<br/>last 30 seconds"]
+        outbox["Outbox<br/>keeps samples until saved"]
+
+        camera -->|"10 times/sec"| face
+        camera -->|"every frame"| worker
+        face -->|"face or no face"| worker
+        worker --> chart
+        worker --> outbox
+    end
+
+    subgraph api["Flask API: stateless"]
+        direction LR
+        guards["CORS, Origin check,<br/>rate limits"]
+        routes["Routes,<br/>Pydantic validation"]
+        services["Services"]
+        repositories["Repositories"]
+
+        guards --> routes --> services --> repositories
+    end
+
+    subgraph database["Postgres"]
+        direction LR
+        sessions["sessions"]
+        samples["samples<br/>primary key: session_id, t"]
+
+        sessions -->|"1 to many"| samples
+    end
+
+    browser -->|"HTTPS + JSON every 2 seconds, numbers only, never video"| api
+    api -->|"SQLAlchemy, duplicate samples ignored"| database
+```
+
+Each sample holds `t`, `fps`, `brightness`, `motion`, `face`, `verdict` and `reason`. Summaries are calculated from the samples on read.
+
+---
+
+## API
+
+| Method and path | Purpose |
+|---|---|
+| `POST /sessions` | Start a session |
+| `POST /sessions/{id}/samples` | Save a batch of samples |
+| `POST /sessions/{id}/stop` | Stop a session |
+| `GET /sessions` | List sessions with summaries, newest first |
+| `GET /sessions/{id}` | One session with its samples and summary |
+| `GET /health` | Check the API and its database connection |
+
+Errors are JSON with a 4xx or 5xx status: `{"error": {"code", "message", "details"}}`.
+
+---
+
+## Thresholds
+
+Set through `VITE_*` values in `frontend/.env`. When several problems happen in the same second, the message comes from the highest row in this table.
+
+| Metric | Warning when | Message |
+|---|---|---|
+| Face | none detected in the whole second | No face |
+| Brightness | below 60 or above 200 | Too dark or Too bright |
+| Motion | above 20 | Hold still |
+| FPS | below 15 | Low FPS |
+
+Face detection runs 10 times per second. FPS, brightness and motion come from the frames the app really processed, so FPS drops if the browser is busy and skips frames.
+
+---
+
+## Data and edge cases
+
+- **No lost samples:** the browser keeps each sample until the backend confirms it, and retries after network errors, timeouts, 408, 429 and 5xx.
+- **No duplicates:** `(session_id, t)` is the primary key, so a retried sample is ignored.
+- **Stop called twice:** returns 200 and keeps the original `ended_at`.
+- **Samples after Stop:** saved for 2 minutes, because retries can delay samples measured before Stop. After that they are ignored with a 200 response, so finished sessions stop changing.
+- **Leaving the page without Stop:** the browser sends its last samples and a Stop while the page closes. If those don't arrive, the session stays without `ended_at` and its duration is still the `t` of the last saved sample.
+- **Tab hidden:** recording pauses and resumes when the tab is visible again. After 5 minutes hidden, the session ends instead of resuming.
 
 ---
 
@@ -90,68 +245,3 @@ The backend tests run on Postgres and create the database named in `TEST_DATABAS
 | `VITE_REQUEST_TIMEOUT_MS` | `10000` | Time before a request counts as failed and is retried |
 | `VITE_MAX_PAUSE_SECONDS` | `300` | A session hidden longer than this ends instead of resuming |
 | `VITE_CHART_WINDOW_SECONDS` | `30` | Seconds shown on the live chart |
-
----
-
-## Stack and free services
-
-| Part | Choice |
-|---|---|
-| Frontend | React, TypeScript, Vite, Mantine, uPlot, axios, MediaPipe Face Detection |
-| Backend | Python, Flask, Pydantic, SQLAlchemy |
-| Database | Postgres |
-| Free services | Vercel (frontend and backend), Neon (Postgres), GitHub |
-
-Free backends sleep when idle, so the first request can take up to a minute.
-
----
-
-## Thresholds
-
-Set through `VITE_*` values in `frontend/.env`.
-
-| Metric | Warning when | Message |
-|---|---|---|
-| FPS | below 15 | Low FPS |
-| Brightness | below 60 or above 200 | Too dark or Too bright |
-| Motion | above 20 | Hold still |
-| Face | none detected in the whole second | No face |
-
-Face detection runs 10 times per second. FPS, brightness and motion use every frame the app processes, calculated in a Web Worker so the UI can't slow down or affect the measurements.
-
----
-
-## Architecture
-
-```
-Browser
-  Camera
-    ├─ every frame ──→ Web Worker: FPS, brightness, motion
-    └─ 10 times/sec ─→ MediaPipe: face detection
-                           │
-                           ▼
-  Per-second sample and verdict (t, fps, brightness, motion, face, verdict, reason)
-    ├─→ Live chart (last 30 seconds)
-    └─→ Outbox: sends a batch every 2 seconds, keeps samples until saved
-                           │
-                           │  HTTPS + JSON, numbers only, never video
-                           ▼
-Flask API (stateless)
-  Routes ──→ Services ──→ Repositories
-  Pydantic validation, restricted CORS, rate limits, structured logs
-                           │
-                           │  SQLAlchemy, duplicate samples ignored
-                           ▼
-Database
-  sessions 1 ──→ many samples, primary key (session_id, t)
-  Summaries are calculated from the samples on read
-```
-
----
-
-## Edge cases
-
-- **Stop called twice:** returns 200 and keeps the original `ended_at`.
-- **Samples after Stop:** saved for 2 minutes, because retries can delay samples measured before Stop. After that they are ignored with a 200 response, so finished sessions stop changing.
-- **Leaving the page without Stop:** the browser sends its last samples and a Stop while the page closes. If those don't arrive, the session stays without `ended_at` and its duration is still the `t` of the last saved sample.
-- **Tab hidden:** recording pauses and resumes when the tab is visible again. After 5 minutes hidden, the session ends instead of resuming.
